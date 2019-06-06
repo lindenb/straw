@@ -70,9 +70,9 @@ size_t hdf(char* b, size_t size, size_t nitems, void *userdata) {
   size_t numbytes = size * nitems;
   b[numbytes+1]='\0';
   string s(b);
-  int found = s.find("Content-Range");
+  std::string::size_type found = s.find("Content-Range");
   if (found !=  string::npos) {
-    int found2 = s.find("/");
+    std::string::size_type found2 = s.find("/");
     //Content-Range: bytes 0-100000/891471462
     if (found2 != string::npos) {
       string total=s.substr(found2+1);
@@ -674,18 +674,18 @@ vector<double> readNormalizationVector(istream& bufferin) {
   return values;
 }
 
-void straw(string norm, string fname, int binsize, string chr1loc, string chr2loc, string unit, vector<int> &xActual, vector<int> &yActual, vector<float> &counts)
+int straw(string norm, string fname, int binsize, string chr1loc, string chr2loc, string unit, vector<XYCount> &results)
 {
-  int earlyexit=1;
+
   if (!(norm=="NONE"||norm=="VC"||norm=="VC_SQRT"||norm=="KR")) {
     cerr << "Norm specified incorrectly, must be one of <NONE/VC/VC_SQRT/KR>" << endl; 
     cerr << "Usage: straw <NONE/VC/VC_SQRT/KR> <hicFile(s)> <chr1>[:x1:x2] <chr2>[:y1:y2] <BP/FRAG> <binsize>" << endl;
-    return;
+    return EXIT_FAILURE;
   }
   if (!(unit=="BP"||unit=="FRAG")) {
     cerr << "Norm specified incorrectly, must be one of <BP/FRAG>" << endl; 
     cerr << "Usage: straw <NONE/VC/VC_SQRT/KR> <hicFile(s)> <chr1>[:x1:x2] <chr2>[:y1:y2] <BP/FRAG> <binsize>" << endl;
-    return;
+    return EXIT_FAILURE;
   }
 
   // parse chromosome positions
@@ -711,7 +711,7 @@ void straw(string norm, string fname, int binsize, string chr1loc, string chr2lo
   ifstream fin;
 
   // read header into buffer; 100K should be sufficient
-  CURL *curl;
+  CURL *curl = NULL;
 
   long master;
   if (std::strncmp(fname.c_str(), prefix.c_str(), prefix.size()) == 0) {
@@ -723,7 +723,7 @@ void straw(string norm, string fname, int binsize, string chr1loc, string chr2lo
     }
     else {
       cerr << "URL " << fname << " cannot be opened for reading" << endl;
-      return;
+      return EXIT_FAILURE;
     }
     membuf sbuf(buffer, buffer + 100000); 
     istream bufin(&sbuf);  
@@ -734,7 +734,7 @@ void straw(string norm, string fname, int binsize, string chr1loc, string chr2lo
     fin.open(fname, fstream::in);
     if (!fin) {
       cerr << "File " << fname << " cannot be opened for reading" << endl;
-      return;
+      return EXIT_FAILURE;
     }
     master = readHeader(fin, chr1, chr2, c1pos1, c1pos2, c2pos1, c2pos2, chr1ind, chr2ind);
   }
@@ -849,9 +849,11 @@ void straw(string norm, string fname, int binsize, string chr1loc, string chr2lo
 	   y >= origRegionIndices[2] && y <= origRegionIndices[3]) ||
 	  // or check regions that overlap with lower left
 	  ((c1==c2) && y >= origRegionIndices[0] && y <= origRegionIndices[1] && x >= origRegionIndices[2] && x <= origRegionIndices[3])) {
-	xActual.push_back(x);
-	yActual.push_back(y);
-	counts.push_back(c);
+	XYCount data;
+	data.x = x;
+	data.y = y;
+	data.count = c;
+	results.push_back(data);
 	//printf("%d\t%d\t%.14g\n", x, y, c);
       }
     }
@@ -860,7 +862,16 @@ void straw(string norm, string fname, int binsize, string chr1loc, string chr2lo
       /* always cleanup */
       // curl_easy_cleanup(curl);
       //    curl_global_cleanup();
-
+   return EXIT_SUCCESS;
 }
+
+HiCReader::HiCReader(const char* fname) {
+
+	}
+HiCReader::~HiCReader() {
+	for(size_t i=0;i< chromosomes.size();i++) {
+		delete chromosomes[i];
+		}
+	}
 
 

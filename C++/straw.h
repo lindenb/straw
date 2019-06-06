@@ -27,6 +27,7 @@
 #include <fstream>
 #include <set>
 #include <vector>
+#include <map>
 
 // pointer structure for reading blocks or matrices, holds the size and position 
 struct indexEntry {
@@ -41,6 +42,28 @@ struct contactRecord {
   float counts;
 };
 
+// output
+struct XYCount {
+	int x;
+	int y;
+	float count;
+};
+
+class Chromosome {
+	public:
+		Chromosome(const char* contig,int length) {
+		
+		}
+	};
+
+class HiCReader {
+	public:
+		std::vector<Chromosome*> chromosomes;
+		std::map<std::string,Chromosome*> name2chromosomes;
+		HiCReader(const char* fname);
+		virtual ~HiCReader();
+	};
+
 bool readMagicString(std::ifstream& fin);
 long readHeader(std::istream& fin, std::string chr1, std::string chr2, int &c1pos1, int &c1pos2, int &c2pos1, int &c2pos2, int &chr1ind, int &chr2ind);
 void readFooter(std::istream& fin, long master, int c1, int c2, std::string norm, std::string unit, int resolution, long &myFilePos, indexEntry &c1NormEntry, indexEntry &c2NormEntry);
@@ -49,5 +72,5 @@ void readMatrix(std::istream& fin, int myFilePosition, std::string unit, int res
 std::set<int> getBlockNumbersForRegionFromBinPosition(int* regionIndices, int blockBinCount, int blockColumnCount, bool intra);
 std::vector<contactRecord> readBlock(std::istream& fin, int blockNumber);
 std::vector<double> readNormalizationVector(std::istream& fin, indexEntry entry);
-void straw(std::string norm, std::string fname, int binsize, std::string chr1loc, std::string chr2loc, std::string unit, std::vector<int>& xActual, std::vector<int>& yActual, std::vector<float>& counts);
+int straw(std::string norm, std::string fname, int binsize, std::string chr1loc, std::string chr2loc, std::string unit, std::vector<XYCount>& results);
 #endif

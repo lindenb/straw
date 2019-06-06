@@ -30,8 +30,8 @@ int main(int argc, char *argv[])
 {
   if (argc != 7) {
     cerr << "Not enough arguments" << endl;
-    cerr << "Usage: straw <NONE/VC/VC_SQRT/KR> <hicFile(s)> <chr1>[:x1:x2] <chr2>[:y1:y2] <BP/FRAG> <binsize>" << endl;
-    exit(1);
+    cerr << "Usage: " << argv[0] << " <NONE/VC/VC_SQRT/KR> <hicFile(s)> <chr1>[:x1:x2] <chr2>[:y1:y2] <BP/FRAG> <binsize>" << endl;
+    return EXIT_FAILURE;
   }
 
   string norm=argv[1];
@@ -41,13 +41,13 @@ int main(int argc, char *argv[])
   string unit=argv[5];
   string size=argv[6];
   int binsize=stoi(size);
-  vector<int> x;
-  vector<int> y;
-  vector<float> counts;
+  vector<XYCount> results;
 
-  straw(norm, fname, binsize, chr1loc, chr2loc, unit, x, y, counts);
-  int length=x.size();
-  for (int i=0; i<length; i++) {
-    printf("%d\t%d\t%.14g\n", x[i], y[i], counts[i]);   
+  if(straw(norm, fname, binsize, chr1loc, chr2loc, unit, results) != EXIT_SUCCESS) {
+  	return EXIT_FAILURE;
+  	}
+  size_t length=results.size();
+  for (size_t i=0; i<length; i++) {
+    printf("%d\t%d\t%.14g\n", results[i].x, results[i].y, results[i].count);   
   }
 }
