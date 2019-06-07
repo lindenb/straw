@@ -10,6 +10,7 @@ public:
 	virtual ~SeekableStream();
 	virtual int read() = 0;
 	virtual void seek(long offset)=0;
+	size_t read(void* s,std::size_t len);
 	void readFully(void* s,std::size_t len);
 	char readChar();
 	short readShort();

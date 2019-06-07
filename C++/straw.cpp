@@ -30,9 +30,11 @@
 #include <set>
 #include <vector>
 #include <streambuf>
-#include <curl/curl.h>
+
 #include "zlib.h"
 #include "straw.h"
+#include "RemoteSeekableStream.hh"
+#include "FileSeekableStream.hh"
 using namespace std;
 
 /*
@@ -45,18 +47,6 @@ using namespace std;
   Usage: straw <NONE/VC/VC_SQRT/KR> <hicFile(s)> <chr1>[:x1:x2] <chr2>[:y1:y2] <BP/FRAG> <binsize> 
  */
 // this is for creating a stream from a byte array for ease of use
-struct membuf : std::streambuf
-{
-  membuf(char* begin, char* end) {
-    this->setg(begin, begin, end);
-  }
-};
-
-// for holding data from URL call
-struct MemoryStruct {
-  char *memory;
-  size_t size;
-};
 
 // version number
 int version;
@@ -66,120 +56,48 @@ map <int, indexEntry> blockMap;
 
 long total_bytes;
 
-size_t hdf(char* b, size_t size, size_t nitems, void *userdata) {
-  size_t numbytes = size * nitems;
-  b[numbytes+1]='\0';
-  string s(b);
-  std::string::size_type found = s.find("Content-Range");
-  if (found !=  string::npos) {
-    std::string::size_type found2 = s.find("/");
-    //Content-Range: bytes 0-100000/891471462
-    if (found2 != string::npos) {
-      string total=s.substr(found2+1);
-      total_bytes = stol(total);
-    }
-  }
 
-  return numbytes;
-}
-
-// callback for libcurl. data written to this buffer
-static size_t
-WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp)
-{
-  size_t realsize = size * nmemb;
-  struct MemoryStruct *mem = (struct MemoryStruct *)userp;
- 
-  mem->memory = static_cast<char*>(realloc(mem->memory, mem->size + realsize + 1));
-  if(mem->memory == NULL) {
-    /* out of memory! */ 
-    printf("not enough memory (realloc returned NULL)\n");
-    return 0;
-  }
- 
-  std::memcpy(&(mem->memory[mem->size]), contents, realsize);
-  mem->size += realsize;
-  mem->memory[mem->size] = 0;
- 
-  return realsize;
-}
-
-// get a buffer that can be used as an input stream from the URL
-char* getData(CURL *curl, long position, int chunksize) {
-  std::ostringstream oss;
-  struct MemoryStruct chunk; 
-
-  chunk.memory = static_cast<char*>(malloc(1)); 
-  chunk.size = 0;    /* no data at this point */ 
-  oss << position << "-" << position + chunksize;
-  curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
-  curl_easy_setopt(curl, CURLOPT_RANGE, oss.str().c_str());
-  CURLcode res = curl_easy_perform(curl);
-  if (res != CURLE_OK) {
-    fprintf(stderr, "curl_easy_perform() failed: %s\n",
-	    curl_easy_strerror(res));    
-  }
-  //  printf("%lu bytes retrieved\n", (long)chunk.size);
-
-  return chunk.memory;
-}
-
-// initialize the CURL stream
-CURL* initCURL(const char* url) {
-  CURL* curl = curl_easy_init();
-  if(curl) {
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    //curl_easy_setopt (curl, CURLOPT_VERBOSE, 1L); 
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, hdf);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "straw");
-  }
-  return curl;
+void getline(SeekableStream* fin,string& key,int ) {
+key=fin->readString();
 }
 
 // returns whether or not this is valid HiC file
-bool readMagicString(istream& fin) {
-  string str;
-  getline(fin, str, '\0' );
+bool readMagicString(SeekableStream* fin) {
+  string str= fin->readString();
   return str[0]=='H' && str[1]=='I' && str[2]=='C';
 }
 
 // reads the header, storing the positions of the normalization vectors and returning the master pointer
-long readHeader(istream& fin, string chr1, string chr2, int &c1pos1, int &c1pos2, int &c2pos1, int &c2pos2, int &chr1ind, int &chr2ind) {
+long readHeader(SeekableStream* fin, string chr1, string chr2, int &c1pos1, int &c1pos2, int &c2pos1, int &c2pos2, int &chr1ind, int &chr2ind) {
   if (!readMagicString(fin)) {
     cerr << "Hi-C magic string is missing, does not appear to be a hic file" << endl;
     exit(1);
   }
 
-  fin.read((char*)&version, sizeof(int));
+  version = fin->readInt();
   if (version < 6) {
     cerr << "Version " << version << " no longer supported" << endl;
     exit(1);
   }
-  long master;
-  fin.read((char*)&master, sizeof(long));
-  string genome;
-  getline(fin, genome, '\0' );
-  int nattributes;
-  fin.read((char*)&nattributes, sizeof(int));
+  long master = fin->readLong();
+
+  string genome = fin->readString();
+  int nattributes = fin->readInt();
 
   // reading and ignoring attribute-value dictionary
   for (int i=0; i<nattributes; i++) {
-    string key, value;
-    getline(fin, key, '\0');
-    getline(fin, value, '\0');
+    string key = fin->readString();
+    string value = fin->readString();
   }
-  int nChrs;
-  fin.read((char*)&nChrs, sizeof(int));
+  int nChrs = fin->readInt();
+  
   // chromosome map for finding matrix
   bool found1 = false;
   bool found2 = false;
   for (int i=0; i<nChrs; i++) {
-    string name;
-    int length;
-    getline(fin, name, '\0');
-    fin.read((char*)&length, sizeof(int));
+    string name = fin->readString();
+    int length = fin->readInt();
+    
     if (name==chr1) {
       found1=true;
       chr1ind = i;
@@ -208,23 +126,18 @@ long readHeader(istream& fin, string chr1, string chr2, int &c1pos1, int &c1pos2
 // norm, unit (BP or FRAG) and resolution or binsize, and sets the file 
 // position of the matrix and the normalization vectors for those chromosomes 
 // at the given normalization and resolution
-void readFooter(istream& fin, long master, int c1, int c2, string norm, string unit, int resolution, long &myFilePos, indexEntry &c1NormEntry, indexEntry &c2NormEntry) {
-  int nBytes;
-  fin.read((char*)&nBytes, sizeof(int));
+void readFooter(SeekableStream* fin, long master, int c1, int c2, string norm, string unit, int resolution, long &myFilePos, indexEntry &c1NormEntry, indexEntry &c2NormEntry) {
+  int nBytes  = fin->readInt();
   stringstream ss;
   ss << c1 << "_" << c2;
   string key = ss.str();
   
-  int nEntries;
-  fin.read((char*)&nEntries, sizeof(int));
+  int nEntries = fin->readInt();
   bool found = false;
   for (int i=0; i<nEntries; i++) {
-    string str;
-    getline(fin, str, '\0');
-    long fpos;
-    fin.read((char*)&fpos, sizeof(long));
-    int sizeinbytes;
-    fin.read((char*)&sizeinbytes, sizeof(int));
+    string str = fin->readString();
+    long fpos  = fin->readLong();
+    int sizeinbytes  = fin->readInt();
     if (str == key) {
       myFilePos = fpos;
       found=true;
@@ -240,69 +153,63 @@ void readFooter(istream& fin, long master, int c1, int c2, string norm, string u
   // read in and ignore expected value maps; don't store; reading these to 
   // get to norm vector index
   int nExpectedValues;
-  fin.read((char*)&nExpectedValues, sizeof(int));
+  fin->read((char*)&nExpectedValues, sizeof(int));
   for (int i=0; i<nExpectedValues; i++) {
-    string str;
-    getline(fin, str, '\0'); //unit
-    int binSize;
-    fin.read((char*)&binSize, sizeof(int));
+    string str = fin->readString();
+    int binSize = fin->readInt();
 
-    int nValues;
-    fin.read((char*)&nValues, sizeof(int));
+    int nValues = fin->readInt();
     for (int j=0; j<nValues; j++) {
-      double v;
-      fin.read((char*)&v, sizeof(double));
+      double v = fin->readDouble();
     }
 
     int nNormalizationFactors;
-    fin.read((char*)&nNormalizationFactors, sizeof(int));
+    fin->read((char*)&nNormalizationFactors, sizeof(int));
     for (int j=0; j<nNormalizationFactors; j++) {
-      int chrIdx;
-      fin.read((char*)&chrIdx, sizeof(int));
-      double v;
-      fin.read((char*)&v, sizeof(double));
+      int chrIdx = fin->readInt();
+      double v= fin->readDouble();
     }
   }
-  fin.read((char*)&nExpectedValues, sizeof(int));
+  fin->read((char*)&nExpectedValues, sizeof(int));
   for (int i=0; i<nExpectedValues; i++) {
     string str;
     getline(fin, str, '\0'); //typeString
     getline(fin, str, '\0'); //unit
     int binSize;
-    fin.read((char*)&binSize, sizeof(int));
+    fin->read((char*)&binSize, sizeof(int));
 
     int nValues;
-    fin.read((char*)&nValues, sizeof(int));
+    fin->read((char*)&nValues, sizeof(int));
     for (int j=0; j<nValues; j++) {
       double v;
-      fin.read((char*)&v, sizeof(double));
+      fin->read((char*)&v, sizeof(double));
     }
     int nNormalizationFactors;
-    fin.read((char*)&nNormalizationFactors, sizeof(int));
+    fin->read((char*)&nNormalizationFactors, sizeof(int));
     for (int j=0; j<nNormalizationFactors; j++) {
       int chrIdx;
-      fin.read((char*)&chrIdx, sizeof(int));
+      fin->read((char*)&chrIdx, sizeof(int));
       double v;
-      fin.read((char*)&v, sizeof(double));
+      fin->read((char*)&v, sizeof(double));
     }
   }
   // Index of normalization vectors
-  fin.read((char*)&nEntries, sizeof(int));
+  fin->read((char*)&nEntries, sizeof(int));
   bool found1 = false;
   bool found2 = false;
   for (int i = 0; i < nEntries; i++) {
     string normtype;
     getline(fin, normtype, '\0'); //normalization type
     int chrIdx;
-    fin.read((char*)&chrIdx, sizeof(int));
+    fin->read((char*)&chrIdx, sizeof(int));
     string unit1;
     getline(fin, unit1, '\0'); //unit
     int resolution1;
-    fin.read((char*)&resolution1, sizeof(int));
+    fin->read((char*)&resolution1, sizeof(int));
     long filePosition;
-    fin.read((char*)&filePosition, sizeof(long));
+    fin->read((char*)&filePosition, sizeof(long));
     int sizeInBytes;
-    fin.read((char*)&sizeInBytes, sizeof(int));
+    fin->read((char*)&sizeInBytes, sizeof(int));
     if (chrIdx == c1 && normtype == norm && unit1 == unit && resolution1 == resolution) {
       c1NormEntry.position=filePosition;
       c1NormEntry.size=sizeInBytes;
@@ -321,22 +228,22 @@ void readFooter(istream& fin, long master, int c1, int c2, string norm, string u
 }
 
 // reads the raw binned contact matrix at specified resolution, setting the block bin count and block column count 
-bool readMatrixZoomData(istream& fin, string myunit, int mybinsize, int &myBlockBinCount, int &myBlockColumnCount) {
+bool readMatrixZoomData(SeekableStream* fin, string myunit, int mybinsize, int &myBlockBinCount, int &myBlockColumnCount) {
   string unit;
   getline(fin, unit, '\0' ); // unit
   int tmp;
-  fin.read((char*)&tmp, sizeof(int)); // Old "zoom" index -- not used
+  fin->read((char*)&tmp, sizeof(int)); // Old "zoom" index -- not used
   float tmp2;
-  fin.read((char*)&tmp2, sizeof(float)); // sumCounts
-  fin.read((char*)&tmp2, sizeof(float)); // occupiedCellCount
-  fin.read((char*)&tmp2, sizeof(float)); // stdDev
-  fin.read((char*)&tmp2, sizeof(float)); // percent95
+  fin->read((char*)&tmp2, sizeof(float)); // sumCounts
+  fin->read((char*)&tmp2, sizeof(float)); // occupiedCellCount
+  fin->read((char*)&tmp2, sizeof(float)); // stdDev
+  fin->read((char*)&tmp2, sizeof(float)); // percent95
   int binSize;
-  fin.read((char*)&binSize, sizeof(int));
+  fin->read((char*)&binSize, sizeof(int));
   int blockBinCount;
-  fin.read((char*)&blockBinCount, sizeof(int));
+  fin->read((char*)&blockBinCount, sizeof(int));
   int blockColumnCount;
-  fin.read((char*)&blockColumnCount, sizeof(int));
+  fin->read((char*)&blockColumnCount, sizeof(int));
   
   bool storeBlockData = false;
   if (myunit==unit && mybinsize==binSize) {
@@ -346,15 +253,15 @@ bool readMatrixZoomData(istream& fin, string myunit, int mybinsize, int &myBlock
   }
   
   int nBlocks;
-  fin.read((char*)&nBlocks, sizeof(int));
+  fin->read((char*)&nBlocks, sizeof(int));
 
   for (int b = 0; b < nBlocks; b++) {
     int blockNumber;
-    fin.read((char*)&blockNumber, sizeof(int));
+    fin->read((char*)&blockNumber, sizeof(int));
     long filePosition;
-    fin.read((char*)&filePosition, sizeof(long));
+    fin->read((char*)&filePosition, sizeof(long));
     int blockSizeInBytes;
-    fin.read((char*)&blockSizeInBytes, sizeof(int));
+    fin->read((char*)&blockSizeInBytes, sizeof(int));
     indexEntry entry;
     entry.size = blockSizeInBytes;
     entry.position = filePosition;
@@ -363,115 +270,15 @@ bool readMatrixZoomData(istream& fin, string myunit, int mybinsize, int &myBlock
   return storeBlockData;
 }
 
-// reads the raw binned contact matrix at specified resolution, setting the block bin count and block column count 
-bool readMatrixZoomDataHttp(CURL* curl, long &myFilePosition, string myunit, int mybinsize, int &myBlockBinCount, int &myBlockColumnCount) {
-  char* buffer;
-  int header_size = 5*sizeof(int)+4*sizeof(float);
-  char* first;
-  first = getData(curl, myFilePosition, 1);
-  if (first[0]=='B') {
-    header_size+=3;
-  }
-  else if (first[0]=='F') {
-    header_size+=5;
-  }
-  else {
-    cerr << "Unit not understood" << endl;
-    exit(1);
-  }
-  buffer = getData(curl, myFilePosition, header_size);
-  membuf sbuf(buffer, buffer + header_size);
-  istream fin(&sbuf);
-
-  string unit;
-  getline(fin, unit, '\0' ); // unit
-  int tmp;
-  fin.read((char*)&tmp, sizeof(int)); // Old "zoom" index -- not used
-  float tmp2;
-  fin.read((char*)&tmp2, sizeof(float)); // sumCounts
-  fin.read((char*)&tmp2, sizeof(float)); // occupiedCellCount
-  fin.read((char*)&tmp2, sizeof(float)); // stdDev
-  fin.read((char*)&tmp2, sizeof(float)); // percent95
-  int binSize;
-  fin.read((char*)&binSize, sizeof(int));
-  int blockBinCount;
-  fin.read((char*)&blockBinCount, sizeof(int));
-  int blockColumnCount;
-  fin.read((char*)&blockColumnCount, sizeof(int));
-
-  bool storeBlockData = false;
-  if (myunit==unit && mybinsize==binSize) {
-    myBlockBinCount = blockBinCount;
-    myBlockColumnCount = blockColumnCount;
-    storeBlockData = true;
-  }
-  
-  int nBlocks;
-  fin.read((char*)&nBlocks, sizeof(int));
-
-  if (storeBlockData) {
-    buffer = getData(curl, myFilePosition+header_size, nBlocks*(sizeof(int)+sizeof(long)+sizeof(int)));
-    membuf sbuf2(buffer, buffer + nBlocks*(sizeof(int)+sizeof(long)+sizeof(int)));
-    istream fin2(&sbuf2);
-    for (int b = 0; b < nBlocks; b++) {
-      int blockNumber;
-      fin2.read((char*)&blockNumber, sizeof(int));
-      long filePosition;
-      fin2.read((char*)&filePosition, sizeof(long));
-      int blockSizeInBytes;
-      fin2.read((char*)&blockSizeInBytes, sizeof(int));
-      indexEntry entry;
-      entry.size = blockSizeInBytes;
-      entry.position = filePosition;
-      blockMap[blockNumber] = entry;
-    }
-  }
-  else {
-    myFilePosition = myFilePosition+header_size+(nBlocks*(sizeof(int)+sizeof(long)+sizeof(int)));
-  }
-  delete buffer;
-  return storeBlockData;
-}
-
-// goes to the specified file pointer in http and finds the raw contact matrix at specified resolution, calling readMatrixZoomData.
-// sets blockbincount and blockcolumncount
-void readMatrixHttp(CURL *curl, long myFilePosition, string unit, int resolution, int &myBlockBinCount, int &myBlockColumnCount) {
-  char * buffer;
-  int size = sizeof(int)*3;
-  buffer = getData(curl, myFilePosition, size);
-  membuf sbuf(buffer, buffer + size);
-  istream bufin(&sbuf);
-
-  int c1,c2;
-  bufin.read((char*)&c1, sizeof(int)); //chr1
-  bufin.read((char*)&c2, sizeof(int)); //chr2
-  int nRes;
-  bufin.read((char*)&nRes, sizeof(int));
-  int i=0;
-  bool found=false;
-  myFilePosition=myFilePosition+size;
-  delete buffer;
-
-  while (i<nRes && !found) {
-    // myFilePosition gets updated within call
-    found = readMatrixZoomDataHttp(curl, myFilePosition, unit, resolution, myBlockBinCount, myBlockColumnCount);
-    i++;
-  }
-  if (!found) {
-    cerr << "Error finding block data" << endl;
-    exit(1);
-  }
-}
-
 // goes to the specified file pointer and finds the raw contact matrix at specified resolution, calling readMatrixZoomData.
 // sets blockbincount and blockcolumncount
-void readMatrix(istream& fin, long myFilePosition, string unit, int resolution, int &myBlockBinCount, int &myBlockColumnCount) {
-  fin.seekg(myFilePosition, ios::beg);
+void readMatrix(SeekableStream * fin, long myFilePosition, string unit, int resolution, int &myBlockBinCount, int &myBlockColumnCount) {
+  fin->seek(myFilePosition);
   int c1,c2;
-  fin.read((char*)&c1, sizeof(int)); //chr1
-  fin.read((char*)&c2, sizeof(int)); //chr2
+  fin->read((char*)&c1, sizeof(int)); //chr1
+  fin->read((char*)&c2, sizeof(int)); //chr2
   int nRes;
-  fin.read((char*)&nRes, sizeof(int));
+  fin->read((char*)&nRes, sizeof(int));
   int i=0;
   bool found=false;
   while (i<nRes && !found) {
@@ -513,9 +320,16 @@ set<int> getBlockNumbersForRegionFromBinPosition(int* regionIndices, int blockBi
    return blocksSet;
 }
 
+struct membuf : std::streambuf
+{
+membuf(char* begin, char* end) {
+    this->setg(begin, begin, end);
+  }
+};
+
 // this is the meat of reading the data.  takes in the block number and returns the set of contact records corresponding to
 // that block.  the block data is compressed and must be decompressed using the zlib library functions
-vector<contactRecord> readBlock(istream& fin, CURL* curl, bool isHttp, int blockNumber) {
+vector<contactRecord> readBlock(SeekableStream* fin, int blockNumber) {
   indexEntry idx = blockMap[blockNumber];
   if (idx.size == 0) {
     vector<contactRecord> v;
@@ -524,13 +338,9 @@ vector<contactRecord> readBlock(istream& fin, CURL* curl, bool isHttp, int block
   char* compressedBytes = new char[idx.size];
   char* uncompressedBytes = new char[idx.size*10]; //biggest seen so far is 3
 
-  if (isHttp) {
-    compressedBytes = getData(curl, idx.position, idx.size);    
-  }
-  else {
-    fin.seekg(idx.position, ios::beg);
-    fin.read(compressedBytes, idx.size);
-  }
+    fin->seek(idx.position);
+    fin->read(compressedBytes, idx.size);
+  
   // Decompress the block
   // zlib struct
   z_stream infstream;
@@ -707,38 +517,20 @@ int straw(string norm, string fname, int binsize, string chr1loc, string chr2loc
 
   // HTTP code
   string prefix="http";
-  bool isHttp = false;
-  ifstream fin;
+  SeekableStream* fin;
 
   // read header into buffer; 100K should be sufficient
-  CURL *curl = NULL;
+  
 
   long master;
   if (std::strncmp(fname.c_str(), prefix.c_str(), prefix.size()) == 0) {
-    isHttp = true;
-    char * buffer;
-    curl = initCURL(fname.c_str());
-    if (curl) {
-      buffer = getData(curl, 0, 100000);    
-    }
-    else {
-      cerr << "URL " << fname << " cannot be opened for reading" << endl;
-      return EXIT_FAILURE;
-    }
-    membuf sbuf(buffer, buffer + 100000); 
-    istream bufin(&sbuf);  
-    master = readHeader(bufin, chr1, chr2, c1pos1, c1pos2, c2pos1, c2pos2, chr1ind, chr2ind);
-    delete buffer;
+    fin= new RemoteSeekableStream(fname.c_str());
+
   }
   else {
-    fin.open(fname, fstream::in);
-    if (!fin) {
-      cerr << "File " << fname << " cannot be opened for reading" << endl;
-      return EXIT_FAILURE;
-    }
-    master = readHeader(fin, chr1, chr2, c1pos1, c1pos2, c2pos1, c2pos2, chr1ind, chr2ind);
+    fin= new FileSeekableStream(fname.c_str());
   }
-
+    master = readHeader(fin, chr1, chr2, c1pos1, c1pos2, c2pos1, c2pos2, chr1ind, chr2ind);
   // from header have size of chromosomes, set region to read
   int c1=min(chr1ind,chr2ind);
   int c2=max(chr1ind,chr2ind);
@@ -769,20 +561,11 @@ int straw(string norm, string fname, int binsize, string chr1loc, string chr2loc
   indexEntry c1NormEntry, c2NormEntry;
   long myFilePos;
 
-  long bytes_to_read = total_bytes - master;
 
-  if (isHttp) {
-    char* buffer2;
-    buffer2 = getData(curl, master, bytes_to_read);    
-    membuf sbuf2(buffer2, buffer2 + bytes_to_read);
-    istream bufin2(&sbuf2);
-    readFooter(bufin2, master, c1, c2, norm, unit, binsize, myFilePos, c1NormEntry, c2NormEntry); 
-    delete buffer2;
-  }
-  else { 
-    fin.seekg(master, ios::beg);
+
+    fin->seek(master);
     readFooter(fin, master, c1, c2, norm, unit, binsize, myFilePos, c1NormEntry, c2NormEntry); 
-  }
+  
   // readFooter will assign the above variables
 
 
@@ -791,27 +574,21 @@ int straw(string norm, string fname, int binsize, string chr1loc, string chr2loc
 
   if (norm != "NONE") {
     char* buffer3;
-    if (isHttp) {
-      buffer3 = getData(curl, c1NormEntry.position, c1NormEntry.size);
-    }
-    else {
+    
       buffer3 = new char[c1NormEntry.size];
-      fin.seekg(c1NormEntry.position, ios::beg);
-      fin.read(buffer3, c1NormEntry.size);
-    }
+      fin->seek(c1NormEntry.position);
+      fin->readFully(buffer3, c1NormEntry.size);
+    
     membuf sbuf3(buffer3, buffer3 + c1NormEntry.size);
     istream bufferin(&sbuf3);
     c1Norm = readNormalizationVector(bufferin);
 
     char* buffer4;
-    if (isHttp) {
-      buffer4 = getData(curl, c2NormEntry.position, c2NormEntry.size);
-    }
-    else {
+    
       buffer4 = new char[c2NormEntry.size];
-      fin.seekg(c2NormEntry.position, ios::beg);
-      fin.read(buffer4, c2NormEntry.size);
-    }
+      fin->seek(c2NormEntry.position);
+      fin->readFully(buffer4, c2NormEntry.size);
+    
     membuf sbuf4(buffer4, buffer4 + c2NormEntry.size);
     istream bufferin2(&sbuf4);
     c2Norm = readNormalizationVector(bufferin2);
@@ -820,21 +597,16 @@ int straw(string norm, string fname, int binsize, string chr1loc, string chr2loc
   }
 
   int blockBinCount, blockColumnCount;
-  if (isHttp) {
-    // readMatrix will assign blockBinCount and blockColumnCount
-    readMatrixHttp(curl, myFilePos, unit, binsize, blockBinCount, blockColumnCount); 
-  }
-  else {
-    // readMatrix will assign blockBinCount and blockColumnCount
+  
     readMatrix(fin, myFilePos, unit, binsize, blockBinCount, blockColumnCount); 
-  }
+  
   set<int> blockNumbers = getBlockNumbersForRegionFromBinPosition(regionIndices, blockBinCount, blockColumnCount, c1==c2); 
 
   // getBlockIndices
   vector<contactRecord> records;
   for (set<int>::iterator it=blockNumbers.begin(); it!=blockNumbers.end(); ++it) {
     // get contacts in this block
-    records = readBlock(fin, curl, isHttp, *it);
+    records = readBlock(fin, *it);
     for (vector<contactRecord>::iterator it2=records.begin(); it2!=records.end(); ++it2) {
       contactRecord rec = *it2;
       

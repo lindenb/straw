@@ -10,6 +10,8 @@ SeekableStream::SeekableStream() {
 SeekableStream::~SeekableStream() {
 	}
 
+
+
 std::string  SeekableStream::readString() {
 	std::ostringstream oss;
 	
@@ -26,16 +28,23 @@ std::string  SeekableStream::readString() {
 	return oss.str();
 	}
 
-void SeekableStream::readFully(void* s,std::size_t len) {
+size_t SeekableStream::read(void* s,std::size_t len) {
+	size_t i =0UL;
 	char* p=(char*)s;
-	for(size_t i=0;i< len;i++)
+	while(i<len)
 		{
 		int c = this->read();
-		if(c==EOF)  {
-			cerr << "EOF exception" << endl;
-			exit(EXIT_FAILURE);
-			}
+		if(c==EOF)  break;
 		p[i]=(char)c;
+		i++;
+		}
+	return i;
+	}
+
+void SeekableStream::readFully(void* s,std::size_t len) {
+	if(read(s,len)!=len)  {
+		cerr << "EOF exception" << endl;
+		exit(EXIT_FAILURE);
 		}
 	}
 

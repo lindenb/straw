@@ -2,6 +2,9 @@ CFLAGS=-Wall -O3 -std=c++0x
 LIBS=-lcurl -lz
 CC=g++
 
+straw: main.o straw.o SeekableStream.o FileSeekableStream.o RemoteSeekableStream.o
+	$(CC) -o $@ $^ $(LIBS)
+
 a.out : SeekableStream.o FileSeekableStream.o RemoteSeekableStream.o
 	$(CC) -o $@ $^ $(LIBS)
 
@@ -14,8 +17,7 @@ RemoteSeekableStream.o: RemoteSeekableStream.cpp RemoteSeekableStream.hh  Seekab
 SeekableStream.o: SeekableStream.cpp SeekableStream.hh
 	$(CC) -c $(CFLAGS) -o $@ $<
 
-straw: main.o straw.o
-	$(CC) -o $@ $^ $(LIBS)
+
 
 straw.o: straw.cpp  straw.h
 	$(CC) -c $(CFLAGS) -o $@  $<

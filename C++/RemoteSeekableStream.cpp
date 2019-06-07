@@ -83,6 +83,7 @@ RemoteSeekableStream::~RemoteSeekableStream() {
  curl_easy_cleanup(this->curl);
  }
 	
+	/*
 int main(int argc,char** argv) {
 RemoteSeekableStream in("https://raw.githubusercontent.com/danlimsk/bioingorwithpython/6fd606cfcc85fd0d5cce6b11c4bbb4d67e395fda/data/rebase-bionet-format.txt");
 int c;
@@ -91,5 +92,5 @@ while((c=in.read())!=-1) {
 	fputc(c,stdout);
 	} 
 return 0;
-}	
+}	*/
 
