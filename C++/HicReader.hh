@@ -14,9 +14,10 @@ private:
 		int length;
 		int index;
 	};
+   std::string source;
    std::map<std::string,Chromosome*> name2chrom;
    std::vector<Chromosome*> chromosomes;
-   SeekableStream* bufferin;
+   SeekableStream* fin;
    int version;
    std::string build;
    std::map<std::string,std::string> attributes;

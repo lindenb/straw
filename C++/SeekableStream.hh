@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <string>
+#include <cstdint>
 
 class SeekableStream {
 public:
@@ -13,9 +14,9 @@ public:
 	size_t read(void* s,std::size_t len);
 	void readFully(void* s,std::size_t len);
 	char readChar();
-	short readShort();
-	int readInt();
-	long readLong();
+	std::int16_t readShort();
+	std::int32_t readInt();
+	std::int64_t readLong();
 	float readFloat();
 	double readDouble();
 	std::string readString();
