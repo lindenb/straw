@@ -54,4 +54,46 @@ HicReader::~HicReader() {
 	for(size_t i=0;i< chromosomes.size();i++) delete chromosomes[i];
 	}
 
+Chromosome* HicReader::find_chromosome_by_name(const string s) const {
+	std::map<std::string,Chromosome*>::iterator r = name2chrom.find(s);
+	return r==name2chrom.end()?NULL:(Chromosome*)r->second;
+	}
+
+bool HicReader::parseInterval(const char* str,QueryInterval* interval) const {
+	std::string s(str);
+	std::string::size_type colon = s.find(':');
+	if(colon == string::npos) //whole chrom {
+		interval->chromosome = find_chromosome_by_name(s);
+		if( interval->chromosome == NULL) {
+			DEBUG("unknown chromosome in " << str);
+			return false;
+			}
+		interval->start = 0;
+		interval->end = interval->chromosome->length;
+		return true;
+		}
+	else
+		{
+		string chrom = str.substr(0,colon);
+		interval->chromosome = find_chromosome_by_name(s);
+		if( interval->chromosome == NULL) {
+			DEBUG("unknown chromosome in " << str);
+			return false;
+			}
+		
+		std::string::size_type hyphen = s.find('-',colon+1);
+		if(hyphen == string::npos) hyphen = s.find(':',colon+1);
+		if(hyphen == string::npos) {
+			DEBUG("bad interval " << str);
+			return false;
+			}
+		interval->start = atoi(str.substr(colon+1,(hyphen-colon)));
+		interval->end = atoi(str.substr(hyphen+1));
+		if(interval->start >= interval->end) {
+			DEBUG("bad interval " << str);
+			return false;
+			}
+		return true;
+		}
+	}
 

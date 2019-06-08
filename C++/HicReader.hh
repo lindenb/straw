@@ -6,25 +6,48 @@
 #include <vector>
 #include "SeekableStream.hh"
 
-class HicReader {
-private:
-	class Chromosome {
+enum Normalisation {
+	VC
+	};
+	
+enum Unit {
+	BP,FRAG
+	};
+
+class Chromosome {
 	public:
 		std::string name;
-		int length;
-		int index;
+		std::int32_t length;
+		std::int32_t index;
 	};
+
+struct QueryInterval
+	{
+	Chromosome* chromosome;
+	std::int32_t start;
+	std::int32_t end;
+	std::int32_t tid() const {
+		return chromosome->index;
+		}
+	};
+
+class HicReader {
+private:
+	
    std::string source;
    std::map<std::string,Chromosome*> name2chrom;
    std::vector<Chromosome*> chromosomes;
    SeekableStream* fin;
-   int version;
+   std::int32_t start; version;
    std::string build;
    std::map<std::string,std::string> attributes;
-   long master;
+   std::int64_t start; master;
+   
+   Chromosome* find_chromosome_by_name(std::string c) const;
 public:
 	HicReader(const char* s);
 	~HicReader();
+	bool parseInterval(std::string str,QueryInterval* interval) const;
 };
 
 #endif
