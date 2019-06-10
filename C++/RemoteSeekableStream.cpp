@@ -1,6 +1,7 @@
 #include <sstream>
 #include <cstdio>
 #include <cstring>
+#include "Debug.hh"
 #include "RemoteSeekableStream.hh"
 using namespace std;
 
@@ -36,10 +37,7 @@ bool RemoteSeekableStream::refill() {
     curl_easy_setopt(curl, CURLOPT_RANGE, s.c_str());
     
     CURLcode res = ::curl_easy_perform(this->curl);
-	if (res != CURLE_OK) {
-		cerr << "curl_easy_perform() failed: " << curl_easy_strerror(res);
-		exit(EXIT_FAILURE);    
-	  }
+	if (res != CURLE_OK) THROW_ERROR("curl_easy_perform() failed: " << curl_easy_strerror(res));
 	
 	return buffer_end > 0;
 	}
@@ -65,10 +63,8 @@ RemoteSeekableStream::RemoteSeekableStream(const char* url) {
 	buffer_end = 0UL;
 	offset = 0L;
 	this->curl = ::curl_easy_init();
-	if(this->curl == NULL) {
-	  		cerr << "cannot ::curl_easy_init" << endl;
-	  		exit(EXIT_FAILURE);
-	  		}
+	if(this->curl == NULL) THROW_ERROR("cannot ::curl_easy_init");
+	  		
 	curl_easy_setopt(curl, CURLOPT_URL, url);
 	//curl_easy_setopt (curl, CURLOPT_VERBOSE, 1L); 
 	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -81,6 +77,7 @@ RemoteSeekableStream::RemoteSeekableStream(const char* url) {
 
 RemoteSeekableStream::~RemoteSeekableStream() {
  curl_easy_cleanup(this->curl);
+ delete[] buffer;
  }
 	
 	/*
