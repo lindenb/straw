@@ -1,7 +1,11 @@
 #include <cstring>
+#include <map>
+#include <set>
+#include <zlib.h>
 #include "HicReader.hh"
 #include "RemoteSeekableStream.hh"
 #include "FileSeekableStream.hh"
+#include "MemorySeekableStream.hh"
 #include "Debug.hh"
 using namespace std;
 
@@ -30,7 +34,244 @@ class HicQuery
 		int64_t myFilePos;	
 		indexEntry indexEntry1;
 		indexEntry indexEntry2;
+		
+		vector<double> c1Norm;
+  		vector<double> c2Norm;
+
+
+		  int32_t blockBinCount;
+	 	  int32_t blockColumnCount;
+
+		map<int32_t,indexEntry> blockMap;
+		set<int> blocksSet;
 	};
+
+
+static void readNormalizationVector(SeekableStream* fin, indexEntry* entry,vector<double>& norm) {
+      if( entry->position <= 0L) return;
+      fin->seek(entry->position);
+      char* buffer = new char[entry->size];
+      fin->readFully(buffer, entry->size);
+      MemorySeekableStream bufferin(buffer,entry->size);
+
+	int32_t nValues= bufferin.readInt();
+	norm.reserve(nValues);
+	  for (int32_t i = 0; i < nValues; i++) {
+	    double d = bufferin.readDouble();
+	    norm.push_back(d);
+	  }
+       delete[] buffer;
+       }
+
+static bool readMatrixZoomData(SeekableStream* fin, HicQuery* q) {
+  string unit = fin->readString();
+  fin->readInt();//tmp
+
+  fin->readFloat(); // sumCounts
+  fin->readFloat(); // occupiedCellCount
+  fin->readFloat(); // stdDev
+  fin->readFloat(); // percent95
+  int32_t binSize = fin->readInt();
+  int32_t blockBinCount = fin->readInt();
+  int32_t blockColumnCount = fin->readInt();;
+  
+  bool storeBlockData = false;
+  if (q->unit==unit && q->resolution==binSize) {
+    q->blockBinCount = blockBinCount;
+    q->blockColumnCount = blockColumnCount;
+    storeBlockData = true;
+  }
+  
+  int32_t nBlocks = fin->readInt();
+
+
+  for (int32_t b = 0; b < nBlocks; b++) {
+    int32_t blockNumber = fin->readInt();
+    int64_t filePosition = fin->readLong();
+    int32_t blockSizeInBytes = fin->readInt();
+    indexEntry entry;
+    entry.size = blockSizeInBytes;
+    entry.position = filePosition;
+    if (storeBlockData) q->blockMap[blockNumber] = entry;
+  }
+  return storeBlockData;
+}
+
+
+static bool readMatrix(SeekableStream* fin, HicQuery* q)
+	{
+	 fin->seek(q->myFilePos);
+	 fin->readInt();//c1
+	 fin->readInt();//c2
+	 int32_t nRes = fin->readInt();
+	 int32_t i=0;
+	 bool found=false;
+	 while (i<nRes && !found) {
+	    found = readMatrixZoomData(fin, q);
+	    i++;
+	    }
+        return found;
+	}
+
+// gets the blocks that need to be read for this slice of the data.  needs blockbincount, blockcolumncount, and whether
+// or not this is intrachromosomal.
+static void getBlockNumbersForRegionFromBinPosition(HicQuery* q) {
+   int32_t col1 = q->interval1.start / q->blockBinCount;
+   int32_t col2 = ( q->interval1.end + 1) / q->blockBinCount;
+   int32_t row1 = q->interval2.start / q->blockBinCount;
+   int32_t row2 = (q->interval2.end + 1) / q->blockBinCount;
+   
+   // first check the upper triangular matrix
+   for (int32_t r = row1; r <= row2; r++) {
+     for (int32_t c = col1; c <= col2; c++) {
+       int32_t blockNumber = r * q->blockColumnCount + c;
+       q->blocksSet.insert(blockNumber);
+     }
+   }
+   // check region part that overlaps with lower left triangle
+   // but only if intrachromosomal
+   if ( q->interval1.tid() ==  q->interval2.tid()) {
+     for (int32_t r = col1; r <= col2; r++) {
+       for (int32_t c = row1; c <= row2; c++) {
+	 int32_t blockNumber = r * q->blockColumnCount + c;
+	 q->blocksSet.insert(blockNumber);
+       }
+     }
+   }
+}
+
+
+// this is the meat of reading the data.  takes in the block number and returns the set of contact records corresponding to
+// that block.  the block data is compressed and must be decompressed using the zlib library functions
+void readBlock(SeekableStream* fin,HicQuery* q, int blockNumber,int version) {
+  auto iter = q->blockMap.find(blockNumber);
+  if(iter == q->blockMap.end()) return;
+  indexEntry idx = iter->second;
+  if (idx.size == 0) {
+    return;
+    }
+
+  char* compressedBytes = new char[idx.size];
+  char* uncompressedBytes = new char[idx.size*10]; //biggest seen so far is 3
+
+  
+  fin->seek(idx.position);
+  fin->readFully(compressedBytes, idx.size);
+  
+  // Decompress the block
+  // zlib struct
+  z_stream infstream;
+  infstream.zalloc = Z_NULL;
+  infstream.zfree = Z_NULL;
+  infstream.opaque = Z_NULL;
+  infstream.avail_in = (uInt)(idx.size); // size of input
+  infstream.next_in = (Bytef *)compressedBytes; // input char array
+  infstream.avail_out = (uInt)idx.size*10; // size of output
+  infstream.next_out = (Bytef *)uncompressedBytes; // output char array
+  // the actual decompression work.
+  inflateInit(&infstream);
+  inflate(&infstream, Z_NO_FLUSH);
+  inflateEnd(&infstream);
+  int uncompressedSize=infstream.total_out;
+
+  // create stream from buffer for ease of use
+  MemorySeekableStream bufferin(uncompressedBytes,uncompressedSize);
+
+  int32_t nRecords = bufferin.readInt();
+
+  // different versions have different specific formats
+  if (version < 7) {
+    for (int32_t i = 0; i < nRecords; i++) {
+      int32_t binX = bufferin.readInt();
+      int32_t binY = bufferin.readInt();
+      float counts = bufferin.readFloat();
+       /*
+      contactRecord record;
+      record.binX = binX;
+      record.binY = binY;
+      record.counts = counts;
+      v[i] = record;*/
+    }
+  } 
+  else {
+    int32_t binXOffset = bufferin.readInt();
+    int32_t binYOffset = bufferin.readInt();
+
+    char useShort = bufferin.readChar();
+    char type= bufferin.readChar();
+    int index=0;
+    if (type == 1) {
+      // List-of-rows representation
+      int16_t rowCount = bufferin.readShort();
+
+      for (int32_t i = 0; i < rowCount; i++) {
+	short y  = bufferin.readShort();
+	int binY = y + binYOffset;
+	short colCount  = bufferin.readShort();
+
+	for (int j = 0; j < colCount; j++) {
+	  short x = bufferin.readShort();
+	  int binX = binXOffset + x;
+	  float counts;
+	  if (useShort == 0) { // yes this is opposite of usual
+	    short c = bufferin.readShort();
+	    counts = c;
+	  } 
+	  else {
+	    counts = bufferin.readFloat();
+	  }
+		/*
+	  contactRecord record;
+	  record.binX = binX;
+	  record.binY = binY;
+	  record.counts = counts;
+	  v[index]=record;
+	  index++;*/
+	}
+      }
+    }
+    else if (type == 2) { // have yet to find test file where this is true, possibly entirely deprecated
+      int32_t nPts = bufferin.readInt(); 
+      int32_t w =bufferin.readInt(); 
+
+      for (int32_t i = 0; i < nPts; i++) {
+	//int idx = (p.y - binOffset2) * w + (p.x - binOffset1);
+	int row = i / w;
+	int col = i - row * w;
+	int bin1 = binXOffset + col;
+	int bin2 = binYOffset + row;
+
+	float counts;
+	if (useShort == 0) { // yes this is opposite of the usual
+	  short c = bufferin.readShort();
+	  if (c != -32768) {
+		/*
+	    contactRecord record;
+	    record.binX = bin1;
+	    record.binY = bin2;
+	    record.counts = c;
+	    v[index]=record;
+	    index++;*/
+	  }
+	} 
+	else {
+	 counts =  bufferin.readFloat();
+	  if (counts != 0x7fc00000) { // not sure this works
+	    //	  if (!Float.isNaN(counts)) {
+	    /*contactRecord record;
+	    record.binX = bin1;
+	    record.binY = bin2;
+	    record.counts = counts;
+	    v[index]=record;
+	    index++;*/
+	  }
+	}
+      }
+    }
+  }
+  delete compressedBytes;
+  delete uncompressedBytes; // don't forget to delete your heap arrays in C++!
+}
 
 HicReader::HicReader(const char* s):source(s) {
 	if(strncmp(s,"http://",7)==0 || strncmp(s,"https://",8)==0) {
@@ -139,6 +380,18 @@ bool HicReader::query(const char* interval1,const char* interval2,norm_t norm,un
 	 	swap(q.interval1,q.interval2);
 	 	}
 	if (!queryFooter((void*)&q)) return false;
+
+
+	
+
+
+  	if (norm != "NONE") {
+		readNormalizationVector(this->fin,&(q.indexEntry1),q.c1Norm);
+	        readNormalizationVector(this->fin,&(q.indexEntry2),q.c2Norm);
+		}
+	if (!readMatrix(this->fin,&q)) return false;
+
+	getBlockNumbersForRegionFromBinPosition(&q);
 	return true;
 	}
 
