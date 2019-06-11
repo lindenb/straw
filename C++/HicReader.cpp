@@ -5,7 +5,32 @@
 #include "Debug.hh"
 using namespace std;
 
+struct QueryInterval {
+	Chromosome* chromosome;
+	int32_t start;
+	int32_t end;
+	int32_t tid() const { return chromosome->index;}
+	};
 
+// pointer structure for reading blocks or matrices, holds the size and position 
+struct indexEntry {
+  int size;
+  long position;
+};
+
+class HicQuery
+	{
+	public:
+		QueryInterval interval1;
+		QueryInterval interval2;
+		std::string norm;
+		std::string unit;
+		int32_t resolution;
+		//
+		int64_t myFilePos;	
+		indexEntry indexEntry1;
+		indexEntry indexEntry2;
+	};
 
 HicReader::HicReader(const char* s):source(s) {
 	if(strncmp(s,"http://",7)==0 || strncmp(s,"https://",8)==0) {
@@ -59,7 +84,8 @@ Chromosome* HicReader::find_chromosome_by_name(const string s) const {
 	return r==name2chrom.end()?NULL:(Chromosome*)r->second;
 	}
 
-bool HicReader::parseInterval(string s,QueryInterval* interval) const {
+bool HicReader::parseInterval(string s,void* intervalptr) const {
+	QueryInterval* interval = (QueryInterval*)intervalptr;
 	std::string::size_type colon = s.find(':');
 	if(colon == string::npos) { //whole chrom
 		interval->chromosome = find_chromosome_by_name(s);
@@ -96,29 +122,24 @@ bool HicReader::parseInterval(string s,QueryInterval* interval) const {
 		}
 	}
 
-	void HicReader::query(HicQuery* q) {
-	 if (q==NULL) return;
-	 QueryInterval interval1;
-	 QueryInterval interval2;
-	 
-	 if (q->interval1str != NULL) {
-	 	if(!this->parseInterval(q->interval1str,&interval1)) return;
-	 	q->interval1 = &interval1;
-	 } else
-	 	{
-	 	q->interval1 = NULL;
-	 	}
+bool HicReader::query(const char* interval1,const char* interval2,norm_t norm,unit_t unit,resolution_t resolution,query_callback_t) {
+	if(interval1==NULL) return false;
+	if(interval2==NULL) return false;	
+	HicQuery q;
+	q.norm = norm;
+	q.unit = unit;
+	q.resolution = resolution;
 
-	if (q->interval2str != NULL) {
-	 	if(!this->parseInterval(q->interval2str,&interval2)) return;
-		q->interval2 = &interval2;
-	 } else
-	 	{
-	 	q->interval2 = NULL;
+	 if(!this->parseInterval(interval1,&(q.interval1))) return false;
+	 if(!this->parseInterval(interval2,&(q.interval2))) return false;
+
+	 if(q.interval1.tid()< q.interval2.tid() || 
+		( q.interval1.tid() == q.interval2.tid() && q.interval1.start < q.interval2.start)
+		) {
+	 	swap(q.interval1,q.interval2);
 	 	}
-	 if(q->interval1!=NULL && q->interval2!=NULL && q->interval1->tid()< q->interval2->tid()) {
-	 	swap(q->interval1,q->interval2);
-	 	}
+	if (!queryFooter((void*)&q)) return false;
+	return true;
 	}
 
 
@@ -126,45 +147,51 @@ bool HicReader::parseInterval(string s,QueryInterval* interval) const {
 // norm, unit (BP or FRAG) and resolution or binsize, and sets the file 
 // position of the matrix and the normalization vectors for those chromosomes 
 // at the given normalization and resolution
-void HicReader::queryFooter(HicQuery* q) {
- fin->seek(master);
-  int32_t nBytes  = fin->readInt();
-  stringstream ss;
-  ss << c1 << "_" << c2;
-  string key = ss.str();
+bool HicReader::queryFooter(void* qptr) {
+  HicQuery* q = (HicQuery*)qptr;
+  q->myFilePos = -1L;
+
+  fin->seek(master);
+  fin->readInt();//nBytes
+
   
   int32_t nEntries = fin->readInt();
-  bool found = false;
+
+
   for (int i=0; i<nEntries; i++) {
     string str = fin->readString();
+    string::size_type u = str.find('_');
+    if(u==string::npos) THROW_ERROR("no '_' in " << str);
+    int32_t tid1 = std::stoi(str.substr(0,u));
+    int32_t tid2 = std::stoi(str.substr(u+1));
+
     int64_t fpos  = fin->readLong();
-    int32_t sizeinbytes  = fin->readInt();
-    if (str == key) {
-      myFilePos = fpos;
-      found=true;
+    fin->readInt(); // sizeinbytes 
+    if (tid1 == q->interval1.tid() && tid2 == q->interval2.tid()) {
+      q->myFilePos = fpos;
     }
   }
-  if (!found) return;
+  if (q->myFilePos <= 0L) return false;
 
-  if (q->norm=="NONE") return; // no need to read norm vector index
+  if (q->norm=="NONE") return true; // no need to read norm vector index
  
   // read in and ignore expected value maps; don't store; reading these to 
   // get to norm vector index
   int32_t nExpectedValues = fin->readInt();
 
   for (int i=0; i<nExpectedValues; i++) {
-    string str = fin->readString();
-    int32_t binSize = fin->readInt();
+   fin->readString();//str
+   fin->readInt();//binSize
 
     int32_t nValues = fin->readInt();
-    for (int j=0; j<nValues; j++) {
-      double v = fin->readDouble();
+    for (int32_t j=0; j<nValues; j++) {
+     fin->readDouble();//v
     }
 
     int32_t nNormalizationFactors = fin->readInt();
-    for (int j=0; j<nNormalizationFactors; j++) {
-      int32_t chrIdx = fin->readInt();
-      double v= fin->readDouble();
+    for (int32_t j=0; j<nNormalizationFactors; j++) {
+      fin->readInt();// tid
+      fin->readDouble();//v
     }
   }
   
@@ -172,43 +199,45 @@ void HicReader::queryFooter(HicQuery* q) {
   for (int32_t i=0; i<nExpectedValues; i++) {
     fin->readString(); //typeString
     fin->readString(); //unit
-    int32_t binSize = fin->readInt();
+    fin->readInt(); //binSize
     int32_t nValues = fin->readInt();
     for (int j=0; j<nValues; j++) {
-      double v = fin->readDouble();
+       fin->readDouble();//v
     }
     int32_t nNormalizationFactors = fin->readInt();
-    for (int j=0; j<nNormalizationFactors; j++) {
-      int32_t chrIdx  =fin->readInt();
-      double v = fin->readDouble();
+    for (int32_t j=0; j<nNormalizationFactors; j++) {
+      fin->readInt();//chrIdx
+      fin->readDouble();//v
     }
   }
   // Index of normalization vectors
-  int32_t nEntries = fin->readInt();
-  bool found1 = false;
-  bool found2 = false;
-  for (int i = 0; i < nEntries; i++) {
+  nEntries = fin->readInt();
+  q->indexEntry1.position = -1L;
+  q->indexEntry2.position = -1L;
+
+  
+
+  for (int32_t i = 0; i < nEntries; i++) {
     string normtype = fin->readString();
     int32_t chrIdx = fin->readInt();
-    string unit1 = fin->readString()
+    string unit1 = fin->readString();
     int32_t resolution1 = fin->readInt();
     int64_t filePosition = fin->readLong();
     int sizeInBytes = fin->readInt();
-    if (chrIdx == c1 && normtype == norm && unit1 == unit && resolution1 == resolution) {
-      c1NormEntry.position=filePosition;
-      c1NormEntry.size=sizeInBytes;
-      found1 = true;
+    if (chrIdx == q->interval1.tid() && normtype == q->norm && unit1 == q->unit && resolution1 == q->resolution) {
+      q->indexEntry1.position=filePosition;
+      q->indexEntry1.size=sizeInBytes;
     }
-    if (chrIdx == c2 && normtype == norm && unit1 == unit && resolution1 == resolution) {
-      c2NormEntry.position=filePosition;
-      c2NormEntry.size=sizeInBytes;
-      found2 = true;
+    if (chrIdx == q->interval2.tid() && normtype == q->norm && unit1 == q->unit && resolution1 == q->resolution) {
+      q->indexEntry2.position=filePosition;
+      q->indexEntry2.size=sizeInBytes;
     }
   }
-  if (!found1 || !found2) {
-  
-  
+  if (q->indexEntry1.position <= 0L || q->indexEntry2.position <= 0L) {
+    return false;
   }
+
+return true;
 }
 
 

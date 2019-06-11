@@ -6,13 +6,10 @@
 #include <vector>
 #include "SeekableStream.hh"
 
-enum Normalisation {
-	VC
-	};
-	
-enum Unit {
-	BP,FRAG
-	};
+typedef std::string norm_t;
+typedef int32_t resolution_t;
+typedef std::string unit_t;
+typedef void (*query_callback_t)(void*) ;
 
 class Chromosome {
 	public:
@@ -21,28 +18,7 @@ class Chromosome {
 		std::int32_t index;
 	};
 
-struct QueryInterval
-	{
-	Chromosome* chromosome;
-	std::int32_t start;
-	std::int32_t end;
-	std::int32_t tid() const {
-		return chromosome->index;
-		}
-	};
 
-
-class HicQuery
-	{
-	public:
-		const char* interval1str;
-		const char* interval2str;
-		QueryInterval* interval1;
-		QueryInterval* interval2;
-		std::string norm;
-		std::string unit;
-		int32_t resolution		
-	};
 
 
 class HicReader {
@@ -61,10 +37,11 @@ private:
 public:
 	HicReader(const char* s);
 	~HicReader();
-	bool parseInterval(std::string str,QueryInterval* interval) const;
-	void query(HicQuery* q);
+
+	bool query(const char* interval1,const char* interval2,norm_t norm,unit_t unit,resolution_t binSize,query_callback_t);
 private:
-	void queryFooter(HicQuery* q);
+	bool parseInterval(std::string str,void* interval) const;
+	bool queryFooter(void* q);
 };
 
 #endif
